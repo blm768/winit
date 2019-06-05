@@ -81,12 +81,16 @@ version = "0.3.22"
 optional = true
 features = [
     'Document',
+    'DomRect',
+    'Element',
     'Event',
     'EventTarget',
     'FocusEvent',
     'HtmlCanvasElement',
+    'HtmlElement',
     'KeyboardEvent',
     'MouseEvent',
+    'Node',
     'PointerEvent',
     'Window',
     'WheelEvent'
