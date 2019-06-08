@@ -6,7 +6,8 @@ use platform::web_sys::WindowExtWebSys;
 use platform_impl::platform::{document, window};
 use monitor::{MonitorHandle as RootMH};
 use window::{CursorIcon, Window as RootWindow, WindowAttributes, WindowId as RootWI};
-use super::{EventLoopWindowTarget, OsError, register};
+use super::{CallbackRegistry, EventLoopWindowTarget, OsError};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::collections::vec_deque::IntoIter as VecDequeIter;
 use std::cell::RefCell;
@@ -51,6 +52,7 @@ pub struct Window {
     pub(crate) redraw: Box<dyn Fn()>,
     previous_pointer: RefCell<&'static str>,
     position: RefCell<LogicalPosition>,
+    callbacks: Box<dyn Any>,
 }
 
 impl Window {
@@ -64,7 +66,8 @@ impl Window {
             .ok_or_else(|| os_error!(OsError("Failed to find body node".to_owned())))?
             .append_child(&canvas).map_err(|_| os_error!(OsError("Failed to append canvas".to_owned())))?;
 
-        register(&target.runner, &canvas);
+        let mut callbacks = CallbackRegistry::new(target.runner.clone(), canvas.clone().unchecked_into());
+        callbacks.register_window_events();
 
         let runner = target.runner.clone();
         let redraw = Box::new(move || {
@@ -85,7 +88,8 @@ impl Window {
             position: RefCell::new(LogicalPosition {
                 x: 0.0,
                 y: 0.0
-            })
+            }),
+            callbacks: Box::new(callbacks),
         };
 
         if let Some(inner_size) = attr.inner_size {

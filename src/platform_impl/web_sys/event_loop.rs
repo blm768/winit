@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use wasm_bindgen::{prelude::*, JsCast};
-use web_sys::{EventTarget, FocusEvent, HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
+use web_sys::{EventTarget, FocusEvent, KeyboardEvent, PointerEvent, WheelEvent};
 use window::WindowId as RootWI;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,6 +27,7 @@ impl DeviceId {
 
 pub struct EventLoop<T: 'static> {
     elw: RootELW<T>,
+    callbacks: CallbackRegistry<T>,
 }
 
 pub struct EventLoopWindowTarget<T: 'static> {
@@ -71,12 +72,13 @@ struct EventLoopRunner<T> {
 
 impl<T> EventLoop<T> {
     pub fn new() -> Self {
-        EventLoop {
-            elw: RootELW {
-                p: EventLoopWindowTarget::new(),
-                _marker: PhantomData,
-            },
-        }
+        let elw = RootELW {
+            p: EventLoopWindowTarget::new(),
+            _marker: PhantomData,
+        };
+        let document = document();
+        let callbacks = CallbackRegistry::new(elw.p.runner.clone(), document.unchecked_into());
+        EventLoop { elw, callbacks }
     }
 
     pub fn available_monitors(&self) -> VecDequeIter<MonitorHandle> {
@@ -87,7 +89,7 @@ impl<T> EventLoop<T> {
         MonitorHandle
     }
 
-    pub fn run<F>(self, mut event_handler: F) -> !
+    pub fn run<F>(mut self, mut event_handler: F) -> !
     where
         F: 'static + FnMut(Event<T>, &RootELW<T>, &mut ControlFlow),
     {
@@ -99,20 +101,19 @@ impl<T> EventLoop<T> {
         };
         runner.set_listener(Box::new(move |evt, ctrl| event_handler(evt, &relw, ctrl)));
 
-        let document = &document();
-        add_event(&runner, document, "blur", |elrs, _: FocusEvent| {
+        self.callbacks.add_event("blur", |elrs, _: FocusEvent| {
             elrs.send_event(Event::WindowEvent {
                 window_id: RootWI(WindowId),
                 event: WindowEvent::Focused(false),
             });
         });
-        add_event(&runner, document, "focus", |elrs, _: FocusEvent| {
+        self.callbacks.add_event("focus", |elrs, _: FocusEvent| {
             elrs.send_event(Event::WindowEvent {
                 window_id: RootWI(WindowId),
                 event: WindowEvent::Focused(true),
             });
         });
-        add_event(&runner, document, "keydown", |elrs, event: KeyboardEvent| {
+        self.callbacks.add_event("keydown", |elrs, event: KeyboardEvent| {
             let key = event.key();
             let mut characters = key.chars();
             let first = characters.next();
@@ -136,7 +137,7 @@ impl<T> EventLoop<T> {
                 },
             });
         });
-        add_event(&runner, document, "keyup", |elrs, event: KeyboardEvent| {
+        self.callbacks.add_event("keyup", |elrs, event: KeyboardEvent| {
             elrs.send_event(Event::WindowEvent {
                 window_id: RootWI(WindowId),
                 event: WindowEvent::KeyboardInput {
@@ -169,8 +170,27 @@ impl<T> EventLoop<T> {
     }
 }
 
-pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvasElement) {
-    add_event(elrs, canvas, "pointerout", |elrs, event: PointerEvent| {
+struct SavedCallback {
+    pub event: &'static str,
+    pub callback: Box<dyn AsRef<JsValue>>,
+}
+
+/**
+ * Manages the lifetime of the closures that are used to bind Web events to `winit` events
+ */
+pub struct CallbackRegistry<T: 'static> {
+    runner: EventLoopRunnerShared<T>,
+    event_target: EventTarget,
+    callbacks: Vec<SavedCallback>,
+}
+
+impl<T: 'static> CallbackRegistry<T> {
+    pub fn new(runner: EventLoopRunnerShared<T>, event_target: EventTarget) -> Self {
+        CallbackRegistry { runner, event_target, callbacks: Vec::new() }
+    }
+
+    pub fn register_window_events(&mut self) {
+        self.add_event("pointerout", |elrs, event: PointerEvent| {
         elrs.send_event(Event::WindowEvent {
             window_id: RootWI(WindowId),
             event: WindowEvent::CursorLeft {
@@ -178,7 +198,7 @@ pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvas
             },
         });
     });
-    add_event(elrs, canvas, "pointerover", |elrs, event: PointerEvent| {
+        self.add_event("pointerover", |elrs, event: PointerEvent| {
         elrs.send_event(Event::WindowEvent {
             window_id: RootWI(WindowId),
             event: WindowEvent::CursorEntered {
@@ -186,7 +206,7 @@ pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvas
             },
         });
     });
-    add_event(elrs, canvas, "pointermove", |elrs, event: PointerEvent| {
+        self.add_event("pointermove", |elrs, event: PointerEvent| {
         elrs.send_event(Event::WindowEvent {
             window_id: RootWI(WindowId),
             event: WindowEvent::CursorMoved {
@@ -199,7 +219,7 @@ pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvas
             },
         });
     });
-    add_event(elrs, canvas, "pointerup", |elrs, event: PointerEvent| {
+        self.add_event("pointerup", |elrs, event: PointerEvent| {
         elrs.send_event(Event::WindowEvent {
             window_id: RootWI(WindowId),
             event: WindowEvent::MouseInput {
@@ -210,7 +230,7 @@ pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvas
             },
         });
     });
-    add_event(elrs, canvas, "pointerdown", |elrs, event: PointerEvent| {
+        self.add_event("pointerdown", |elrs, event: PointerEvent| {
         elrs.send_event(Event::WindowEvent {
             window_id: RootWI(WindowId),
             event: WindowEvent::MouseInput {
@@ -221,7 +241,7 @@ pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvas
             },
         });
     });
-    add_event(elrs, canvas, "wheel", |elrs, event: WheelEvent| {
+        self.add_event("wheel", |elrs, event: WheelEvent| {
         let x = event.delta_x();
         let y = event.delta_y();
         let delta = match event.delta_mode() {
@@ -241,18 +261,17 @@ pub fn register<T: 'static>(elrs: &EventLoopRunnerShared<T>, canvas: &HtmlCanvas
     });
 }
 
-fn add_event<T: 'static, E, F>(
-    elrs: &EventLoopRunnerShared<T>,
-    target: &EventTarget,
-    event: &str,
+    fn add_event<E, F>(
+        &mut self,
+        event: &'static str,
     mut handler: F,
 ) where
     E: AsRef<web_sys::Event> + wasm_bindgen::convert::FromWasmAbi + 'static,
     F: FnMut(&EventLoopRunnerShared<T>, E) + 'static,
 {
-    let elrs = elrs.clone();
+        let elrs = self.runner.clone();
 
-    let closure = Closure::wrap(Box::new(move |event: E| {
+        let callback = Closure::wrap(Box::new(move |event: E| {
         // Don't capture the event if the events loop has been destroyed
         match &*elrs.runner.borrow() {
             Some(ref runner) if runner.control == ControlFlow::Exit => return,
@@ -267,8 +286,17 @@ fn add_event<T: 'static, E, F>(
         handler(&elrs, event);
     }) as Box<dyn FnMut(E)>);
 
-    target.add_event_listener_with_callback(event, &closure.as_ref().unchecked_ref());
-    closure.forget(); // TODO: don't leak this.
+        self.event_target.add_event_listener_with_callback(event, &callback.as_ref().unchecked_ref());
+        self.callbacks.push(SavedCallback { event, callback: Box::new(callback) });
+    }
+}
+
+impl<T: 'static> Drop for CallbackRegistry<T> {
+    fn drop(&mut self) {
+        for callback in self.callbacks.iter() {
+            self.event_target.remove_event_listener_with_callback(callback.event, callback.callback.as_ref().as_ref().unchecked_ref());
+        }
+    }
 }
 
 impl<T> ELRShared<T> {

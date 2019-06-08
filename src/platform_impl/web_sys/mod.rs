@@ -5,7 +5,7 @@ mod events;
 mod window;
 
 pub use self::event_loop::{
-    register, DeviceId, EventLoop, EventLoopProxy, EventLoopRunnerShared, EventLoopWindowTarget,
+    CallbackRegistry, DeviceId, EventLoop, EventLoopProxy, EventLoopRunnerShared, EventLoopWindowTarget,
 };
 pub use self::events::{
     button_mapping, keyboard_modifiers_state, mouse_button, mouse_modifiers_state, scancode,
